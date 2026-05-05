@@ -2,46 +2,43 @@
  * Central auth service — all Firebase auth calls go through here.
  * Components never import Firebase directly; they use this module.
  *
- * Supported methods: Email/Password, Google, Apple, Facebook.
- * MFA: TOTP (Google Authenticator / Authy) — requires Firebase Identity Platform.
+ * Supported sign-in methods: Email/Password, Google, Apple.
+ * No MFA. No email verification. Instant access on all paths.
+ *
+ * Username rules:
+ *  • Stored in Firestore as the document ID in the `usernames` collection
+ *    (lowercase) so uniqueness is enforced at the database level.
+ *  • Also written to `users/{uid}.username` and Firebase displayName.
+ *  • Social sign-ins that have no username yet return `needs-username`
+ *    so the UI can prompt before entering the game.
  */
 
 import {
   createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
   signOut as firebaseSignOut,
-  sendEmailVerification,
+  updateProfile,
   GoogleAuthProvider,
-  FacebookAuthProvider,
   OAuthProvider,
   signInWithCredential,
-  getMultiFactorResolver,
-  multiFactor,
-  TotpMultiFactorGenerator,
-  MultiFactorResolver,
   User,
   AuthError,
 } from 'firebase/auth';
-import { auth } from './firebase';
+import {
+  doc,
+  getDoc,
+  setDoc,
+  writeBatch,
+} from 'firebase/firestore';
+import { auth, db } from './firebase';
 import { checkRateLimit, recordFailedAttempt, recordSuccess } from './rateLimiter';
-import { setMFAEnrolled, getMFAFactorUid, clearMFAData } from './tokenService';
-
-// ── MFA resolver is held in module scope so it can survive navigation ──────
-let _pendingMFAResolver: MultiFactorResolver | null = null;
-
-export function getPendingMFAResolver(): MultiFactorResolver | null {
-  return _pendingMFAResolver;
-}
-
-export function clearPendingMFAResolver(): void {
-  _pendingMFAResolver = null;
-}
 
 // ── Error mapping ──────────────────────────────────────────────────────────
 
 const FIREBASE_MESSAGES: Record<string, string> = {
   'auth/user-not-found':        'No account found for this email.',
-  'auth/wrong-password':        'Incorrect password.',
+  'auth/wrong-password':        'Incorrect email or password.',
+  'auth/invalid-credential':    'Incorrect email or password.',
   'auth/email-already-in-use':  'An account already exists with this email.',
   'auth/invalid-email':         'Invalid email address.',
   'auth/weak-password':         'Password must be at least 8 characters.',
@@ -57,24 +54,97 @@ export function authErrorMessage(error: unknown): string {
   return FIREBASE_MESSAGES[code] ?? 'An unexpected error occurred. Please try again.';
 }
 
-// ── Auth result type ───────────────────────────────────────────────────────
+// ── Result type ────────────────────────────────────────────────────────────
 
 export type AuthResult =
-  | { status: 'ok'; user: User }
-  | { status: 'needs-mfa' }
-  | { status: 'needs-verification'; user: User }
-  | { status: 'error'; message: string };
+  | { status: 'ok';             user: User }
+  | { status: 'needs-username'; user: User }  // social sign-in, first time
+  | { status: 'error';          message: string };
+
+// ── Username helpers ───────────────────────────────────────────────────────
+
+/**
+ * Returns true if the username is not yet taken in Firestore.
+ * Checks the `usernames` collection where each doc ID is a lowercased username.
+ */
+export async function checkUsernameAvailable(username: string): Promise<boolean> {
+  const snap = await getDoc(doc(db, 'usernames', username.toLowerCase()));
+  return !snap.exists();
+}
+
+/**
+ * Atomically reserve a username and write the user record.
+ * Uses a batch write so either both documents land or neither does.
+ */
+async function reserveUsername(user: User, username: string): Promise<void> {
+  const batch = writeBatch(db);
+  batch.set(doc(db, 'users', user.uid), {
+    username,
+    email: user.email ?? '',
+    createdAt: Date.now(),
+  });
+  batch.set(doc(db, 'usernames', username.toLowerCase()), { uid: user.uid });
+  await batch.commit();
+  // Keep Firebase displayName in sync so `user.displayName` works everywhere
+  await updateProfile(user, { displayName: username });
+}
+
+/**
+ * Check whether an already-authenticated social user has a username.
+ * Returns 'ok' if they do, 'needs-username' if this is their first sign-in.
+ */
+async function resolvePostSocialSignIn(user: User): Promise<AuthResult> {
+  const snap = await getDoc(doc(db, 'users', user.uid));
+  if (snap.exists() && snap.data()?.username) {
+    return { status: 'ok', user };
+  }
+  return { status: 'needs-username', user };
+}
+
+// ── Public: username setup for social sign-ins ─────────────────────────────
+
+/**
+ * Called after a social sign-in when `status === 'needs-username'`.
+ * Validates availability then reserves the username atomically.
+ */
+export async function setUsernameForUser(
+  user: User,
+  username: string,
+): Promise<{ ok: boolean; message?: string }> {
+  try {
+    const available = await checkUsernameAvailable(username);
+    if (!available) {
+      return { ok: false, message: 'That username is already taken.' };
+    }
+    await reserveUsername(user, username);
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, message: (error as Error).message ?? 'Could not save username.' };
+  }
+}
 
 // ── Email / Password ───────────────────────────────────────────────────────
 
-export async function registerWithEmail(
+/**
+ * Register a new player with username + email + password.
+ * Checks username availability before creating the Firebase Auth account.
+ * On success the player is signed in immediately — no email verification step.
+ */
+export async function registerWithEmailAndUsername(
+  username: string,
   email: string,
   password: string,
 ): Promise<AuthResult> {
   try {
+    // Check username first so we don't create a dangling Auth account
+    const available = await checkUsernameAvailable(username);
+    if (!available) {
+      return { status: 'error', message: 'That username is already taken.' };
+    }
+
     const cred = await createUserWithEmailAndPassword(auth, email, password);
-    await sendEmailVerification(cred.user);
-    return { status: 'needs-verification', user: cred.user };
+    await reserveUsername(cred.user, username);
+    return { status: 'ok', user: cred.user };
   } catch (error) {
     return { status: 'error', message: authErrorMessage(error) };
   }
@@ -96,17 +166,8 @@ export async function signInWithEmail(
   try {
     const cred = await signInWithEmailAndPassword(auth, email, password);
     recordSuccess(email);
-
-    if (!cred.user.emailVerified) {
-      return { status: 'needs-verification', user: cred.user };
-    }
-
     return { status: 'ok', user: cred.user };
-  } catch (error: any) {
-    if (error?.code === 'auth/multi-factor-auth-required') {
-      _pendingMFAResolver = getMultiFactorResolver(auth, error);
-      return { status: 'needs-mfa' };
-    }
+  } catch (error) {
     recordFailedAttempt(email);
     return { status: 'error', message: authErrorMessage(error) };
   }
@@ -120,12 +181,8 @@ export async function signInWithGoogleCredential(
   try {
     const credential = GoogleAuthProvider.credential(idToken);
     const cred = await signInWithCredential(auth, credential);
-    return { status: 'ok', user: cred.user };
-  } catch (error: any) {
-    if (error?.code === 'auth/multi-factor-auth-required') {
-      _pendingMFAResolver = getMultiFactorResolver(auth, error);
-      return { status: 'needs-mfa' };
-    }
+    return resolvePostSocialSignIn(cred.user);
+  } catch (error) {
     return { status: 'error', message: authErrorMessage(error) };
   }
 }
@@ -140,126 +197,14 @@ export async function signInWithAppleCredential(
     const provider = new OAuthProvider('apple.com');
     const credential = provider.credential({ idToken: identityToken, rawNonce });
     const cred = await signInWithCredential(auth, credential);
-    return { status: 'ok', user: cred.user };
-  } catch (error: any) {
-    if (error?.code === 'auth/multi-factor-auth-required') {
-      _pendingMFAResolver = getMultiFactorResolver(auth, error);
-      return { status: 'needs-mfa' };
-    }
+    return resolvePostSocialSignIn(cred.user);
+  } catch (error) {
     return { status: 'error', message: authErrorMessage(error) };
   }
 }
 
-// ── Facebook ───────────────────────────────────────────────────────────────
-
-export async function signInWithFacebookCredential(
-  accessToken: string,
-): Promise<AuthResult> {
-  try {
-    const credential = FacebookAuthProvider.credential(accessToken);
-    const cred = await signInWithCredential(auth, credential);
-    return { status: 'ok', user: cred.user };
-  } catch (error: any) {
-    if (error?.code === 'auth/multi-factor-auth-required') {
-      _pendingMFAResolver = getMultiFactorResolver(auth, error);
-      return { status: 'needs-mfa' };
-    }
-    return { status: 'error', message: authErrorMessage(error) };
-  }
-}
-
-// ── MFA — TOTP ─────────────────────────────────────────────────────────────
-
-/**
- * Step 1 of MFA enrollment: generate a TOTP secret.
- * Returns the secret so the screen can display it to the user.
- * Requires: user must be signed in and email verified.
- * Requires Firebase Identity Platform (Blaze plan).
- */
-export async function generateTotpSecret(): Promise<{
-  secret: any; // TotpSecret — typed as any to avoid importing the class
-  uri: string;
-}> {
-  const user = auth.currentUser;
-  if (!user) throw new Error('No authenticated user.');
-
-  const multiFactorUser = multiFactor(user);
-  const session = await multiFactorUser.getSession();
-  const secret = await TotpMultiFactorGenerator.generateSecret(session);
-  const uri = secret.generateQrCodeUrl(
-    user.email ?? 'user',
-    'Dodge Master',
-  );
-  return { secret, uri };
-}
-
-/**
- * Step 2 of MFA enrollment: verify the OTP and complete enrollment.
- */
-export async function enrollMFA(
-  secret: any,
-  otp: string,
-  displayName = 'Authenticator App',
-): Promise<{ success: boolean; message?: string }> {
-  try {
-    const user = auth.currentUser;
-    if (!user) throw new Error('No authenticated user.');
-
-    const multiFactorUser = multiFactor(user);
-    const assertion = TotpMultiFactorGenerator.assertionForEnrollment(secret, otp);
-    await multiFactorUser.enroll(assertion, displayName);
-
-    // Persist enrollment so we can surface it on profile screens
-    const factorUid = multiFactorUser.enrolledFactors[0]?.uid ?? '';
-    await setMFAEnrolled(factorUid);
-
-    return { success: true };
-  } catch (error) {
-    return {
-      success: false,
-      message: (error as Error).message ?? 'Enrollment failed.',
-    };
-  }
-}
-
-/**
- * Resolve a pending MFA challenge during sign-in.
- * Call this after `getPendingMFAResolver()` returns non-null.
- */
-export async function resolveMFASignIn(otp: string): Promise<AuthResult> {
-  if (!_pendingMFAResolver) {
-    return { status: 'error', message: 'No MFA challenge pending.' };
-  }
-
-  try {
-    // Use the first enrolled TOTP factor
-    const factor = _pendingMFAResolver.hints[0];
-    const assertion = TotpMultiFactorGenerator.assertionForSignIn(
-      factor.uid,
-      otp,
-    );
-    const cred = await _pendingMFAResolver.resolveSignIn(assertion);
-    _pendingMFAResolver = null;
-    return { status: 'ok', user: cred.user };
-  } catch (error) {
-    return {
-      status: 'error',
-      message: 'Invalid code. Check your authenticator app and try again.',
-    };
-  }
-}
-
-// ── Utilities ──────────────────────────────────────────────────────────────
-
-export async function resendVerificationEmail(): Promise<void> {
-  const user = auth.currentUser;
-  if (user && !user.emailVerified) {
-    await sendEmailVerification(user);
-  }
-}
+// ── Sign out ───────────────────────────────────────────────────────────────
 
 export async function signOut(): Promise<void> {
-  clearPendingMFAResolver();
-  await clearMFAData();
   await firebaseSignOut(auth);
 }

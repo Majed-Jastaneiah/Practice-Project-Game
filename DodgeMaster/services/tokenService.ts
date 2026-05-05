@@ -1,15 +1,16 @@
 /**
- * Secure token storage using expo-secure-store (hardware-backed on device).
- * Used for storing MFA secrets and other sensitive, non-Firebase credentials.
- * Firebase auth tokens are handled by Firebase's own persistence layer.
+ * Secure local storage for sensitive values that must survive app restarts.
+ * Uses expo-secure-store (hardware-backed keychain/keystore on device).
+ *
+ * Only the MFA-enrolled flag is stored here. OTP codes live in Firestore
+ * (server-side) so they can be invalidated remotely and survive re-installs.
  */
 
 import * as SecureStore from 'expo-secure-store';
 
 const MFA_ENROLLED_KEY = 'dodgemaster:mfa_enrolled';
-const MFA_FACTOR_UID_KEY = 'dodgemaster:mfa_factor_uid';
 
-/** Returns true if the current user has enrolled MFA. */
+/** Returns true if this device has email MFA enrolled for the current user. */
 export async function isMFAEnrolled(): Promise<boolean> {
   try {
     const value = await SecureStore.getItemAsync(MFA_ENROLLED_KEY);
@@ -19,25 +20,15 @@ export async function isMFAEnrolled(): Promise<boolean> {
   }
 }
 
-export async function setMFAEnrolled(factorUid: string): Promise<void> {
+export async function setMFAEnrolled(): Promise<void> {
   await SecureStore.setItemAsync(MFA_ENROLLED_KEY, 'true');
-  await SecureStore.setItemAsync(MFA_FACTOR_UID_KEY, factorUid);
 }
 
-export async function getMFAFactorUid(): Promise<string | null> {
-  try {
-    return await SecureStore.getItemAsync(MFA_FACTOR_UID_KEY);
-  } catch {
-    return null;
-  }
-}
-
-export async function clearMFAData(): Promise<void> {
+export async function clearMFAEnrolled(): Promise<void> {
   await SecureStore.deleteItemAsync(MFA_ENROLLED_KEY);
-  await SecureStore.deleteItemAsync(MFA_FACTOR_UID_KEY);
 }
 
-/** Generic helper: store any sensitive string value. */
+/** Generic helpers for any other sensitive values. */
 export async function storeSecure(key: string, value: string): Promise<void> {
   await SecureStore.setItemAsync(`dodgemaster:${key}`, value);
 }

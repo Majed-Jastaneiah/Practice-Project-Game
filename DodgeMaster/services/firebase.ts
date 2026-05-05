@@ -5,14 +5,17 @@
  *  1. Create a Firebase project at https://console.firebase.google.com
  *  2. Enable Authentication → Sign-in methods: Email/Password, Google,
  *     Apple, and Facebook.
- *  3. For MFA: upgrade to the Blaze (pay-as-you-go) plan and enable
- *     Identity Platform → Multi-factor auth → TOTP.
- *  4. Copy all credentials from Project Settings → Your Apps → Web App
+ *  3. Enable Firestore Database (start in production mode, then apply
+ *     the rules from firestore.rules.example).
+ *  4. Copy credentials from Project Settings → Your Apps → Web App
  *     into your .env file (see .env.example).
+ *
+ *  No Blaze upgrade required — Auth + Firestore are both on the free tier.
  */
 
 import { initializeApp, getApps } from 'firebase/app';
 import { initializeAuth, getReactNativePersistence } from 'firebase/auth';
+import { getFirestore } from 'firebase/firestore';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const firebaseConfig = {
@@ -27,11 +30,10 @@ const firebaseConfig = {
 // Guard against double-initialisation in Fast Refresh
 const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
 
-// Tokens are persisted in AsyncStorage so the user stays logged in across app restarts.
-// Swap `getReactNativePersistence(AsyncStorage)` for a SecureStore adapter
-// (see services/tokenService.ts) if you need hardware-backed storage on iOS/Android.
 export const auth = initializeAuth(app, {
   persistence: getReactNativePersistence(AsyncStorage),
 });
+
+export const db = getFirestore(app);
 
 export default app;

@@ -1,0 +1,29 @@
+// Firestore Security Rules for Dodge Master
+// Paste these into Firebase Console → Firestore → Rules
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // User profile documents — owner read/write only
+    match /users/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+
+    // Username registry — each doc ID is a lowercased username, value is { uid }
+    // Any authenticated user may read (to check availability).
+    // Write is allowed only when the uid in the document matches the requester —
+    // this prevents one user from squatting another's UID.
+    match /usernames/{username} {
+      allow read: if request.auth != null;
+      allow create: if request.auth != null
+                    && request.resource.data.uid == request.auth.uid;
+      // No update/delete — usernames are permanent once reserved
+    }
+
+    // Deny everything else
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

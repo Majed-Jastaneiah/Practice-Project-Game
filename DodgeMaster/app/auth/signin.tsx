@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -6,11 +6,9 @@ import {
   ScrollView,
   SafeAreaView,
   Platform,
-  Alert,
 } from 'react-native';
 import { router } from 'expo-router';
 import * as Google from 'expo-auth-session/providers/google';
-import * as Facebook from 'expo-auth-session/providers/facebook';
 import * as AppleAuthentication from 'expo-apple-authentication';
 import * as Crypto from 'expo-crypto';
 import * as WebBrowser from 'expo-web-browser';
@@ -20,25 +18,83 @@ import {
   signInWithEmail,
   signInWithGoogleCredential,
   signInWithAppleCredential,
-  signInWithFacebookCredential,
+  setUsernameForUser,
+  checkUsernameAvailable,
 } from '@/services/authService';
 import { validateEmail, validatePassword } from '@/utils/validators';
 import { AuthTextInput } from '@/components/auth/AuthTextInput';
 import { SocialButton } from '@/components/auth/SocialButton';
 import { Button } from '@/components/Button';
+import type { User } from 'firebase/auth';
 
-// Required for expo-auth-session redirect handling
 WebBrowser.maybeCompleteAuthSession();
 
+// Username rules (mirrored from signup.tsx — kept local so this file is self-contained)
+function validateUsername(value: string): string | null {
+  if (!value) return 'Username is required.';
+  if (value.length < 3) return 'At least 3 characters.';
+  if (value.length > 20) return '20 characters max.';
+  if (!/^[a-zA-Z][a-zA-Z0-9_]*$/.test(value))
+    return 'Start with a letter. Letters, numbers, and _ only.';
+  return null;
+}
+
+type ScreenStep = 'signin' | 'pick-username';
+
 export default function SignInScreen() {
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
+  const [step, setStep] = useState<ScreenStep>('signin');
+  const [pendingUser, setPendingUser] = useState<User | null>(null);
+
+  // ── Sign-in form state ─────────────────────────────────────────────────
+  const [email, setEmail]           = useState('');
+  const [password, setPassword]     = useState('');
   const [emailError, setEmailError] = useState<string | null>(null);
   const [passwordError, setPasswordError] = useState<string | null>(null);
-  const [generalError, setGeneralError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [generalError, setGeneralError]   = useState<string | null>(null);
+  const [loading, setLoading]       = useState(false);
 
-  // ── Google OAuth ──────────────────────────────────────────────────────────
+  // ── Username picker state (step 2 for social sign-ins) ────────────────
+  const [username, setUsername]           = useState('');
+  const [usernameError, setUsernameError] = useState<string | null>(null);
+  const [usernameStatus, setUsernameStatus] = useState<'idle' | 'checking' | 'available' | 'taken'>('idle');
+  const [savingUsername, setSavingUsername] = useState(false);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (step !== 'pick-username') return;
+    const formatErr = validateUsername(username);
+    if (formatErr || username.length < 3) { setUsernameStatus('idle'); return; }
+
+    setUsernameStatus('checking');
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(async () => {
+      const available = await checkUsernameAvailable(username);
+      setUsernameStatus(available ? 'available' : 'taken');
+    }, 600);
+    return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
+  }, [username, step]);
+
+  // ── Shared handler: receives AuthResult from any sign-in method ────────
+  const handleAuthResult = useCallback(
+    async (promise: Promise<{ status: string; user?: User; message?: string }>) => {
+      setLoading(true);
+      setGeneralError(null);
+      const result = await promise;
+      setLoading(false);
+
+      if (result.status === 'ok') {
+        router.replace('/');
+      } else if (result.status === 'needs-username' && result.user) {
+        setPendingUser(result.user);
+        setStep('pick-username');
+      } else if (result.status === 'error') {
+        setGeneralError(result.message ?? 'Something went wrong.');
+      }
+    },
+    [],
+  );
+
+  // ── Google OAuth ───────────────────────────────────────────────────────
   const [googleRequest, googleResponse, promptGoogleAsync] =
     Google.useAuthRequest({
       webClientId:     process.env.EXPO_PUBLIC_GOOGLE_CLIENT_ID_WEB,
@@ -49,45 +105,21 @@ export default function SignInScreen() {
   useEffect(() => {
     if (googleResponse?.type === 'success') {
       const idToken = googleResponse.params?.id_token;
-      if (idToken) handleOAuthResult(signInWithGoogleCredential(idToken));
+      if (idToken) handleAuthResult(signInWithGoogleCredential(idToken));
     }
-  }, [googleResponse]);
+  }, [googleResponse, handleAuthResult]);
 
-  // ── Facebook OAuth ────────────────────────────────────────────────────────
-  const [fbRequest, fbResponse, promptFacebookAsync] =
-    Facebook.useAuthRequest({
-      clientId: process.env.EXPO_PUBLIC_FACEBOOK_APP_ID,
-    });
-
-  useEffect(() => {
-    if (fbResponse?.type === 'success') {
-      const accessToken = fbResponse.params?.access_token;
-      if (accessToken) handleOAuthResult(signInWithFacebookCredential(accessToken));
-    }
-  }, [fbResponse]);
-
-  // ── Shared OAuth result handler ───────────────────────────────────────────
-  async function handleOAuthResult(promise: ReturnType<typeof signInWithGoogleCredential>) {
-    setLoading(true);
-    setGeneralError(null);
-    const result = await promise;
-    setLoading(false);
-
-    if (result.status === 'ok') {
-      router.replace('/');
-    } else if (result.status === 'needs-mfa') {
-      router.push('/auth/mfa-verify');
-    } else if (result.status === 'error') {
-      setGeneralError(result.message);
-    }
-  }
-
-  // ── Apple Sign In (iOS only) ──────────────────────────────────────────────
+  // ── Apple Sign In (iOS only) ───────────────────────────────────────────
   const handleAppleSignIn = useCallback(async () => {
     setLoading(true);
     setGeneralError(null);
     try {
-      const { rawNonce, hashedNonce } = await generateNonce();
+      const rawNonce = Math.random().toString(36).slice(2, 12) +
+                       Math.random().toString(36).slice(2, 12);
+      const hashedNonce = await Crypto.digestStringAsync(
+        Crypto.CryptoDigestAlgorithm.SHA256,
+        rawNonce,
+      );
 
       const appleCredential = await AppleAuthentication.signInAsync({
         requestedScopes: [
@@ -100,17 +132,16 @@ export default function SignInScreen() {
       const { identityToken } = appleCredential;
       if (!identityToken) throw new Error('Apple did not return an identity token.');
 
-      await handleOAuthResult(signInWithAppleCredential(identityToken, rawNonce));
+      await handleAuthResult(signInWithAppleCredential(identityToken, rawNonce));
     } catch (error: any) {
+      setLoading(false);
       if (error?.code !== 'ERR_REQUEST_CANCELED') {
         setGeneralError('Apple sign-in failed. Please try again.');
       }
-    } finally {
-      setLoading(false);
     }
-  }, []);
+  }, [handleAuthResult]);
 
-  // ── Email sign-in ─────────────────────────────────────────────────────────
+  // ── Email sign-in ──────────────────────────────────────────────────────
   const handleEmailSignIn = useCallback(async () => {
     const eErr = validateEmail(email);
     const pErr = validatePassword(password);
@@ -118,22 +149,82 @@ export default function SignInScreen() {
     setPasswordError(pErr);
     if (eErr || pErr) return;
 
-    setLoading(true);
-    setGeneralError(null);
-    const result = await signInWithEmail(email.trim(), password);
-    setLoading(false);
+    await handleAuthResult(signInWithEmail(email.trim(), password));
+  }, [email, password, handleAuthResult]);
 
-    if (result.status === 'ok') {
+  // ── Username save (step 2) ─────────────────────────────────────────────
+  const handleSaveUsername = useCallback(async () => {
+    const uErr = validateUsername(username);
+    setUsernameError(uErr);
+    if (uErr) return;
+    if (usernameStatus === 'taken')    { setUsernameError('That username is already taken.'); return; }
+    if (usernameStatus === 'checking') { setUsernameError('Still checking — please wait a moment.'); return; }
+    if (!pendingUser) return;
+
+    setSavingUsername(true);
+    const result = await setUsernameForUser(pendingUser, username.trim());
+    setSavingUsername(false);
+
+    if (result.ok) {
       router.replace('/');
-    } else if (result.status === 'needs-verification') {
-      router.push('/auth/verify-email');
-    } else if (result.status === 'needs-mfa') {
-      router.push('/auth/mfa-verify');
     } else {
-      setGeneralError(result.message);
+      setUsernameError(result.message ?? 'Could not save username.');
     }
-  }, [email, password]);
+  }, [username, usernameStatus, pendingUser]);
 
+  const availabilityHint = (() => {
+    if (usernameStatus === 'checking')  return { text: 'Checking…',   color: Colors.textSecondary };
+    if (usernameStatus === 'available') return { text: '✓ Available', color: '#4CAF50' };
+    if (usernameStatus === 'taken')     return { text: '✗ Taken',     color: Colors.danger };
+    return null;
+  })();
+
+  // ── Render: pick-username step ─────────────────────────────────────────
+  if (step === 'pick-username') {
+    return (
+      <SafeAreaView style={styles.safe}>
+        <ScrollView
+          contentContainerStyle={styles.scroll}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
+          <Text style={styles.title}>Choose a Username</Text>
+          <Text style={styles.subtitle}>
+            This is your name on the leaderboard.{'\n'}You can't change it later.
+          </Text>
+
+          <View style={styles.form}>
+            <View>
+              <AuthTextInput
+                label="Username"
+                value={username}
+                onChangeText={(t) => { setUsername(t); setUsernameError(null); setUsernameStatus('idle'); }}
+                error={usernameError}
+                placeholder="e.g. DodgeLegend_99"
+                autoCapitalize="none"
+                autoComplete="username"
+              />
+              {availabilityHint && !usernameError && (
+                <Text style={[styles.availHint, { color: availabilityHint.color }]}>
+                  {availabilityHint.text}
+                </Text>
+              )}
+            </View>
+
+            <Button
+              label="ENTER THE GAME"
+              onPress={handleSaveUsername}
+              variant="primary"
+              loading={savingUsername}
+              style={styles.fullBtn}
+            />
+          </View>
+        </ScrollView>
+      </SafeAreaView>
+    );
+  }
+
+  // ── Render: sign-in step ───────────────────────────────────────────────
   return (
     <SafeAreaView style={styles.safe}>
       <ScrollView
@@ -141,7 +232,6 @@ export default function SignInScreen() {
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
-        {/* Title */}
         <Text style={styles.title}>DODGE{'\n'}MASTER</Text>
         <Text style={styles.subtitle}>Sign in to continue</Text>
 
@@ -160,12 +250,6 @@ export default function SignInScreen() {
               loading={loading}
             />
           )}
-          <SocialButton
-            provider="facebook"
-            onPress={() => promptFacebookAsync()}
-            loading={loading}
-            disabled={!fbRequest}
-          />
         </View>
 
         {/* Divider */}
@@ -205,11 +289,10 @@ export default function SignInScreen() {
             onPress={handleEmailSignIn}
             variant="primary"
             loading={loading}
-            style={styles.signInBtn}
+            style={styles.fullBtn}
           />
         </View>
 
-        {/* Register link */}
         <Button
           label="Create account"
           onPress={() => router.push('/auth/signup')}
@@ -218,19 +301,6 @@ export default function SignInScreen() {
       </ScrollView>
     </SafeAreaView>
   );
-}
-
-// ── Helpers ────────────────────────────────────────────────────────────────
-
-async function generateNonce(): Promise<{ rawNonce: string; hashedNonce: string }> {
-  const rawNonce =
-    Math.random().toString(36).slice(2, 12) +
-    Math.random().toString(36).slice(2, 12);
-  const hashedNonce = await Crypto.digestStringAsync(
-    Crypto.CryptoDigestAlgorithm.SHA256,
-    rawNonce,
-  );
-  return { rawNonce, hashedNonce };
 }
 
 const styles = StyleSheet.create({
@@ -256,10 +326,9 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: Colors.textSecondary,
     marginBottom: 36,
+    textAlign: 'center',
   },
-  social: {
-    width: '100%',
-  },
+  social: { width: '100%' },
   dividerRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -267,18 +336,15 @@ const styles = StyleSheet.create({
     marginVertical: 20,
     gap: 12,
   },
-  dividerLine: {
-    flex: 1,
-    height: 1,
-    backgroundColor: 'rgba(255,255,255,0.1)',
-  },
-  dividerText: {
+  dividerLine: { flex: 1, height: 1, backgroundColor: 'rgba(255,255,255,0.1)' },
+  dividerText: { fontSize: 12, color: Colors.textSecondary },
+  form: { width: '100%', marginBottom: 12 },
+  availHint: {
     fontSize: 12,
-    color: Colors.textSecondary,
-  },
-  form: {
-    width: '100%',
-    marginBottom: 12,
+    fontWeight: '600',
+    marginTop: -10,
+    marginBottom: 16,
+    marginLeft: 2,
   },
   generalError: {
     color: Colors.danger,
@@ -286,8 +352,5 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginBottom: 12,
   },
-  signInBtn: {
-    width: '100%',
-    marginTop: 8,
-  },
+  fullBtn: { width: '100%', marginTop: 8 },
 });
