@@ -1,9 +1,10 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   SafeAreaView,
+  TouchableOpacity,
 } from 'react-native';
 import { router } from 'expo-router';
 import { Colors } from '@/constants/Colors';
@@ -15,6 +16,7 @@ import { getRankForScore } from '@/constants/Ranks';
 import { CoinDisplay } from '@/components/CoinDisplay';
 import { Button } from '@/components/Button';
 import { ShareModal } from '@/components/share/ShareModal';
+import { getDailyChallenges } from '@/services/challengeService';
 
 export default function HomeScreen() {
   const { coins, loading }  = useCoins();
@@ -23,6 +25,7 @@ export default function HomeScreen() {
   const { referralCode, recordShare } = useReferral();
 
   const [shareVisible, setShareVisible] = useState(false);
+  const [challengeDone, setChallengeDone] = useState(0); // 0-3 completed today
 
   const rank       = getRankForScore(bestScore);
   const playerName = user?.displayName ?? user?.email?.split('@')[0];
@@ -35,6 +38,16 @@ export default function HomeScreen() {
     recordShare();
   }, [closeShare, recordShare]);
 
+  // Load today's challenge completion count for the banner
+  useEffect(() => {
+    if (!user) return;
+    getDailyChallenges(user.uid)
+      .then((d) => setChallengeDone(d.challenges.filter((c) => c.completed).length))
+      .catch(() => {});
+  }, [user]);
+
+  const allChallengesDone = challengeDone >= 3;
+
   return (
     <SafeAreaView style={styles.safe}>
       <View style={styles.container}>
@@ -44,6 +57,33 @@ export default function HomeScreen() {
           <Text style={styles.rankBadge}>{rank.emoji}  {rank.label}</Text>
           <CoinDisplay amount={loading ? 0 : coins} size="medium" />
         </View>
+
+        {/* Daily challenge banner */}
+        <TouchableOpacity
+          style={[styles.challengeBanner, allChallengesDone && styles.challengeBannerDone]}
+          onPress={() => router.push('/challenges')}
+          activeOpacity={0.8}
+        >
+          <View style={styles.bannerLeft}>
+            <Text style={styles.bannerIcon}>{allChallengesDone ? '✅' : '⚡'}</Text>
+            <View>
+              <Text style={styles.bannerTitle}>DAILY CHALLENGES</Text>
+              <Text style={styles.bannerSub}>
+                {allChallengesDone
+                  ? 'All done! Come back tomorrow.'
+                  : `${challengeDone} / 3 completed today`}
+              </Text>
+            </View>
+          </View>
+          <View style={styles.dotRow}>
+            {[0, 1, 2].map((i) => (
+              <View
+                key={i}
+                style={[styles.dot, i < challengeDone && styles.dotFilled]}
+              />
+            ))}
+          </View>
+        </TouchableOpacity>
 
         {/* Title block */}
         <View style={styles.hero}>
@@ -64,8 +104,12 @@ export default function HomeScreen() {
             style={styles.playBtn}
           />
           <View style={styles.secondaryRow}>
-            <Button label="SHOP" onPress={() => router.push('/shop')} variant="secondary" style={styles.halfBtn} />
-            <Button label="📤 INVITE" onPress={openInvite} variant="secondary" style={styles.halfBtn} />
+            <Button label="SHOP"       onPress={() => router.push('/shop')}       variant="secondary" style={styles.thirdBtn} />
+            <Button label="📤 INVITE"  onPress={openInvite}                       variant="secondary" style={styles.thirdBtn} />
+            <Button label="⚡"          onPress={() => router.push('/challenges')} variant="secondary" style={styles.iconBtn} />
+          </View>
+          <View style={styles.secondaryRow}>
+            <Button label="🏆 LEADERBOARD" onPress={() => router.push('/leaderboard')} variant="ghost" />
           </View>
         </View>
 
@@ -110,6 +154,45 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     letterSpacing: 2,
   },
+
+  // ── Challenge banner ──────────────────────────────────────────────────────
+  challengeBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: 'rgba(255,215,0,0.07)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,215,0,0.22)',
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    marginTop: 10,
+  },
+  challengeBannerDone: {
+    borderColor: 'rgba(76,175,80,0.35)',
+    backgroundColor: 'rgba(76,175,80,0.07)',
+  },
+  bannerLeft: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  bannerIcon: { fontSize: 20 },
+  bannerTitle: {
+    fontSize: 11,
+    fontWeight: '900',
+    color: Colors.gold,
+    letterSpacing: 3,
+  },
+  bannerSub: { fontSize: 11, color: Colors.textSecondary, marginTop: 2 },
+  dotRow: { flexDirection: 'row', gap: 5 },
+  dot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: 'rgba(255,215,0,0.2)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,215,0,0.3)',
+  },
+  dotFilled: { backgroundColor: Colors.gold },
+
+  // ── Hero ─────────────────────────────────────────────────────────────────
   hero: {
     flex: 1,
     justifyContent: 'center',
@@ -146,15 +229,19 @@ const styles = StyleSheet.create({
     color: Colors.textSecondary,
     fontWeight: '600',
   },
+
+  // ── Actions ───────────────────────────────────────────────────────────────
   actions: { gap: 14, alignItems: 'center' },
-  playBtn: { paddingVertical: 18, minWidth: 220 },
+  playBtn:     { paddingVertical: 18, minWidth: 220 },
   secondaryRow: {
     flexDirection: 'row',
     gap: 10,
     width: '100%',
     justifyContent: 'center',
   },
-  halfBtn: { flex: 1, maxWidth: 160, minWidth: 0 },
+  thirdBtn: { flex: 1, maxWidth: 140, minWidth: 0 },
+  iconBtn:  { width: 52, paddingHorizontal: 0 },
+
   hint: {
     textAlign: 'center',
     color: Colors.textSecondary,
