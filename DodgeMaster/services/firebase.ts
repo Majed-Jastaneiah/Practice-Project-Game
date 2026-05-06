@@ -3,8 +3,7 @@
  *
  * Setup steps:
  *  1. Create a Firebase project at https://console.firebase.google.com
- *  2. Enable Authentication → Sign-in methods: Email/Password, Google,
- *     Apple, and Facebook.
+ *  2. Enable Authentication → Sign-in methods: Email/Password, Google, Apple.
  *  3. Enable Firestore Database (start in production mode, then apply
  *     the rules from firestore.rules.example).
  *  4. Copy credentials from Project Settings → Your Apps → Web App
@@ -14,7 +13,10 @@
  */
 
 import { initializeApp, getApps } from 'firebase/app';
-import { initializeAuth, getReactNativePersistence } from 'firebase/auth';
+import { initializeAuth, getAuth } from 'firebase/auth';
+// Must import from this subpath — Metro doesn't apply Firebase's conditional
+// exports so `firebase/auth` resolves the browser build (no getReactNativePersistence).
+import { getReactNativePersistence } from 'firebase/auth/react-native';
 import { getFirestore } from 'firebase/firestore';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
@@ -27,12 +29,15 @@ const firebaseConfig = {
   appId:             process.env.EXPO_PUBLIC_FIREBASE_APP_ID!,
 };
 
-// Guard against double-initialisation in Fast Refresh
-const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
+// Guard against double-initialisation on Fast Refresh
+const isFirstInit = getApps().length === 0;
+const app = isFirstInit ? initializeApp(firebaseConfig) : getApps()[0];
 
-export const auth = initializeAuth(app, {
-  persistence: getReactNativePersistence(AsyncStorage),
-});
+// initializeAuth throws if called a second time on the same app instance,
+// so fall back to getAuth() which returns the already-initialised instance.
+export const auth = isFirstInit
+  ? initializeAuth(app, { persistence: getReactNativePersistence(AsyncStorage) })
+  : getAuth(app);
 
 export const db = getFirestore(app);
 
