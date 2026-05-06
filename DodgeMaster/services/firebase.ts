@@ -12,31 +12,29 @@
  *  No Blaze upgrade required — Auth + Firestore are both on the free tier.
  */
 
-import { initializeApp, getApps } from 'firebase/app';
-import { initializeAuth, getAuth } from 'firebase/auth';
-// Must import from this subpath — Metro doesn't apply Firebase's conditional
-// exports so `firebase/auth` resolves the browser build (no getReactNativePersistence).
-import { getReactNativePersistence } from 'firebase/auth/react-native';
-import { getFirestore } from 'firebase/firestore';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { getApps, initializeApp } from "firebase/app";
+import {
+  browserLocalPersistence,
+  getAuth,
+  initializeAuth,
+} from "firebase/auth";
+import { getFirestore } from "firebase/firestore";
 
 const firebaseConfig = {
-  apiKey:            process.env.EXPO_PUBLIC_FIREBASE_API_KEY!,
-  authDomain:        process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN!,
-  projectId:         process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID!,
-  storageBucket:     process.env.EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET!,
+  apiKey: process.env.EXPO_PUBLIC_FIREBASE_API_KEY!,
+  authDomain: process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN!,
+  projectId: process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID!,
+  storageBucket: process.env.EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET!,
   messagingSenderId: process.env.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID!,
-  appId:             process.env.EXPO_PUBLIC_FIREBASE_APP_ID!,
+  appId: process.env.EXPO_PUBLIC_FIREBASE_APP_ID!,
 };
 
 // Guard against double-initialisation on Fast Refresh
 const isFirstInit = getApps().length === 0;
 const app = isFirstInit ? initializeApp(firebaseConfig) : getApps()[0];
 
-// initializeAuth throws if called a second time on the same app instance,
-// so fall back to getAuth() which returns the already-initialised instance.
 export const auth = isFirstInit
-  ? initializeAuth(app, { persistence: getReactNativePersistence(AsyncStorage) })
+  ? initializeAuth(app, { persistence: browserLocalPersistence })
   : getAuth(app);
 
 export const db = getFirestore(app);

@@ -7,13 +7,8 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { AuthProvider, useAuth } from '@/contexts/AuthContext';
 import { Colors } from '@/constants/Colors';
 
-/**
- * Auth guard — runs inside AuthProvider so it has access to auth state.
- * Redirects unauthenticated users to /auth/signin, and users whose email
- * is not yet verified to /auth/verify-email.
- */
 function AuthGate({ children }: { children: React.ReactNode }) {
-  const { user, loading, isVerified } = useAuth();
+  const { user, loading } = useAuth();
   const segments = useSegments();
 
   useEffect(() => {
@@ -22,16 +17,11 @@ function AuthGate({ children }: { children: React.ReactNode }) {
     const inAuthGroup = segments[0] === 'auth';
 
     if (!user) {
-      // No user → must sign in
       if (!inAuthGroup) router.replace('/auth/signin');
-    } else if (!isVerified && user.providerData[0]?.providerId === 'password') {
-      // Email/password user who hasn't verified their email yet
-      if (!inAuthGroup) router.replace('/auth/verify-email');
     } else if (inAuthGroup) {
-      // Already authenticated → go to home
       router.replace('/');
     }
-  }, [user, loading, isVerified, segments]);
+  }, [user, loading, segments]);
 
   if (loading) {
     return (
