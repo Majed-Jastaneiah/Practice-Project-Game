@@ -8,17 +8,17 @@ export const GAME_CONFIG = {
   OBSTACLE_MAX_RADIUS: 28,
 
   // Speed in px per tick (30fps), scales with difficulty
-  OBSTACLE_SPEED_MIN: 2.0,
-  OBSTACLE_SPEED_MAX: 7.5,
+  OBSTACLE_SPEED_MIN: 3.0,
+  OBSTACLE_SPEED_MAX: 12.0,
 
   // How often obstacles spawn (ms between spawns)
-  SPAWN_INTERVAL_MAX_MS: 2200, // easy (start)
-  SPAWN_INTERVAL_MIN_MS: 450,  // hard (max difficulty)
+  SPAWN_INTERVAL_MAX_MS: 1400, // easy (start)
+  SPAWN_INTERVAL_MIN_MS: 300,  // hard (max difficulty)
 
-  MAX_OBSTACLES: 18,
+  MAX_OBSTACLES: 22,
 
   // How many seconds until max difficulty is reached
-  DIFFICULTY_RAMP_SECONDS: 90,
+  DIFFICULTY_RAMP_SECONDS: 50,
 
   // Invincibility window after a successful revive (ms)
   REVIVE_INVINCIBILITY_MS: 2500,
