@@ -2,7 +2,9 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { View, Text, StyleSheet, SafeAreaView } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { Colors } from '@/constants/Colors';
+import { COIN_VALUES } from '@/constants/Coins';
 import { useBestScore } from '@/hooks/useBestScore';
+import { useCoins } from '@/hooks/useCoins';
 import { useReferral } from '@/hooks/useReferral';
 import { useAuth } from '@/contexts/AuthContext';
 import { getRankForScore } from '@/constants/Ranks';
@@ -15,26 +17,47 @@ export default function GameOverScreen() {
   const score       = parseInt(params.score ?? '0', 10);
   const coinsEarned = parseInt(params.coinsEarned ?? '0', 10);
 
-  const { user }               = useAuth();
-  const { bestScore, submitScore } = useBestScore();
-  const { referralCode }       = useReferral();
+  const { user }                       = useAuth();
+  const { bestScore, submitScore }     = useBestScore();
+  const { referralCode }               = useReferral();
+  const { coins, loading: coinsLoading, revive } = useCoins();
 
-  const [isNewBest, setIsNewBest]     = useState(false);
+  const [isNewBest, setIsNewBest]       = useState(false);
   const [shareVisible, setShareVisible] = useState(false);
+  const [reviveLoading, setReviveLoading] = useState(false);
 
-  const rank = getRankForScore(score);
+  const rank       = getRankForScore(score);
   const playerName = user?.displayName ?? user?.email?.split('@')[0];
+
+  const canReviveWithCoins = coins >= COIN_VALUES.REVIVE_COST;
 
   useEffect(() => {
     submitScore(score).then((newBest) => {
       setIsNewBest(newBest);
-      // Auto-prompt share on new personal best
       if (newBest) setTimeout(() => setShareVisible(true), 600);
     });
   }, [score, submitScore]);
 
   const openShare = useCallback(() => setShareVisible(true), []);
   const closeShare = useCallback(() => setShareVisible(false), []);
+
+  const handleRevive = useCallback(async () => {
+    setReviveLoading(true);
+    if (canReviveWithCoins) {
+      await revive();
+    } else {
+      // Simulate ad watch
+      await new Promise<void>((r) => setTimeout(r, 1500));
+    }
+    setReviveLoading(false);
+    router.replace('/game');
+  }, [canReviveWithCoins, revive]);
+
+  const reviveLabel = coinsLoading
+    ? 'REVIVE…'
+    : canReviveWithCoins
+      ? `REVIVE  (${COIN_VALUES.REVIVE_COST} 🪙)`
+      : 'REVIVE  (Watch Ad)';
 
   return (
     <SafeAreaView style={styles.safe}>
@@ -66,9 +89,17 @@ export default function GameOverScreen() {
         {/* Actions */}
         <View style={styles.actions}>
           <Button
+            label={reviveLabel}
+            onPress={handleRevive}
+            variant="primary"
+            loading={reviveLoading}
+            disabled={coinsLoading}
+            style={styles.playBtn}
+          />
+          <Button
             label="PLAY AGAIN"
             onPress={() => router.replace('/game')}
-            variant="primary"
+            variant="secondary"
             style={styles.playBtn}
           />
           <Button
