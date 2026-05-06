@@ -17,6 +17,13 @@ import { CoinDisplay } from '@/components/CoinDisplay';
 import { Button } from '@/components/Button';
 import { ShareModal } from '@/components/share/ShareModal';
 import { getDailyChallenges } from '@/services/challengeService';
+import {
+  getWeekEndTime,
+  formatCountdown,
+  getCurrentWeekKey,
+  getWeeklyTopScores,
+  type WeeklyScore,
+} from '@/services/weeklyChampionService';
 
 export default function HomeScreen() {
   const { coins, loading }  = useCoins();
@@ -26,6 +33,8 @@ export default function HomeScreen() {
 
   const [shareVisible, setShareVisible] = useState(false);
   const [challengeDone, setChallengeDone] = useState(0); // 0-3 completed today
+  const [weeklyCountdown, setWeeklyCountdown] = useState('');
+  const [weeklyTop3, setWeeklyTop3] = useState<WeeklyScore[]>([]);
 
   const rank       = getRankForScore(bestScore);
   const playerName = user?.displayName ?? user?.email?.split('@')[0];
@@ -45,6 +54,22 @@ export default function HomeScreen() {
       .then((d) => setChallengeDone(d.challenges.filter((c) => c.completed).length))
       .catch(() => {});
   }, [user]);
+
+  // Weekly countdown timer
+  useEffect(() => {
+    const tick = () =>
+      setWeeklyCountdown(formatCountdown(getWeekEndTime().getTime() - Date.now()));
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Load top 3 for the weekly widget
+  useEffect(() => {
+    getWeeklyTopScores(getCurrentWeekKey(), 3)
+      .then(setWeeklyTop3)
+      .catch(() => {});
+  }, []);
 
   const allChallengesDone = challengeDone >= 3;
 
@@ -85,6 +110,30 @@ export default function HomeScreen() {
           </View>
         </TouchableOpacity>
 
+        {/* Weekly championship widget */}
+        <TouchableOpacity
+          style={styles.weeklyWidget}
+          onPress={() => router.push('/weekly')}
+          activeOpacity={0.8}
+        >
+          <View style={styles.weeklyLeft}>
+            <Text style={styles.weeklyIcon}>🏆</Text>
+            <View>
+              <Text style={styles.weeklyTitle}>WEEKLY CHAMPIONSHIP</Text>
+              <Text style={styles.weeklyCountdown}>{weeklyCountdown}</Text>
+            </View>
+          </View>
+          {weeklyTop3.length > 0 && (
+            <View style={styles.weeklyTop3}>
+              {weeklyTop3.map((e, i) => (
+                <Text key={e.uid} style={styles.weeklyTopEntry} numberOfLines={1}>
+                  {['🥇', '🥈', '🥉'][i]} {e.username}
+                </Text>
+              ))}
+            </View>
+          )}
+        </TouchableOpacity>
+
         {/* Title block */}
         <View style={styles.hero}>
           <Text style={styles.subtitle}>SURVIVAL</Text>
@@ -109,7 +158,8 @@ export default function HomeScreen() {
             <Button label="⚡"          onPress={() => router.push('/challenges')} variant="secondary" style={styles.iconBtn} />
           </View>
           <View style={styles.secondaryRow}>
-            <Button label="🏆 LEADERBOARD" onPress={() => router.push('/leaderboard')} variant="ghost" />
+            <Button label="🏆 LEADERBOARD" onPress={() => router.push('/leaderboard')} variant="ghost" style={styles.halfGhost} />
+            <Button label="👑 WEEKLY"      onPress={() => router.push('/weekly')}      variant="ghost" style={styles.halfGhost} />
           </View>
         </View>
 
@@ -239,8 +289,48 @@ const styles = StyleSheet.create({
     width: '100%',
     justifyContent: 'center',
   },
-  thirdBtn: { flex: 1, maxWidth: 140, minWidth: 0 },
-  iconBtn:  { width: 52, paddingHorizontal: 0 },
+  thirdBtn:  { flex: 1, maxWidth: 140, minWidth: 0 },
+  iconBtn:   { width: 52, paddingHorizontal: 0 },
+  halfGhost: { flex: 1, minWidth: 0 },
+
+  // ── Weekly widget ─────────────────────────────────────────────────────────
+  weeklyWidget: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: 'rgba(255,215,0,0.05)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,215,0,0.2)',
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    marginTop: 8,
+  },
+  weeklyLeft: { flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 },
+  weeklyIcon: { fontSize: 20 },
+  weeklyTitle: {
+    fontSize: 10,
+    fontWeight: '900',
+    color: Colors.gold,
+    letterSpacing: 3,
+  },
+  weeklyCountdown: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: Colors.gold,
+    letterSpacing: 2,
+    marginTop: 2,
+    textShadowColor: Colors.gold,
+    textShadowOffset: { width: 0, height: 0 },
+    textShadowRadius: 6,
+  },
+  weeklyTop3: { alignItems: 'flex-end', gap: 2 },
+  weeklyTopEntry: {
+    fontSize: 11,
+    color: Colors.textSecondary,
+    fontWeight: '600',
+    maxWidth: 120,
+  },
 
   hint: {
     textAlign: 'center',
