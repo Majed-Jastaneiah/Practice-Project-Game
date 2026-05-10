@@ -80,12 +80,19 @@ function randRadius() {
   return Math.round(randomBetween(GAME_CONFIG.OBSTACLE_MIN_RADIUS, GAME_CONFIG.OBSTACLE_MAX_RADIUS));
 }
 
-// Pre-chaos: obstacles fall straight down from the top edge only.
+// Pre-chaos: obstacles come from all 4 edges with perpendicular velocity.
 function createDropObstacle(screenW: number, screenH: number, speed: number): EnhancedObstacle {
   const r = randRadius();
-  const x = randomBetween(r, screenW - r);
-  const o = baseFields(generateId(), x, -r, 0, speed, r, randColor(), 'drop');
-  return { ...o, baseVx: 0, baseVy: speed };
+  const edge = Math.floor(Math.random() * 4);
+  let x: number, y: number, vx: number, vy: number;
+  switch (edge) {
+    case 0:  x = randomBetween(r, screenW - r); y = -r;          vx = 0;      vy = speed;  break; // top → down
+    case 1:  x = randomBetween(r, screenW - r); y = screenH + r; vx = 0;      vy = -speed; break; // bottom → up
+    case 2:  x = -r;          y = randomBetween(r, screenH - r); vx = speed;  vy = 0;      break; // left → right
+    default: x = screenW + r; y = randomBetween(r, screenH - r); vx = -speed; vy = 0;             // right → left
+  }
+  const o = baseFields(generateId(), x, y, vx, vy, r, randColor(), 'drop');
+  return { ...o, baseVx: vx, baseVy: vy };
 }
 
 // Post-chaos: one of 8 movement patterns chosen at random.

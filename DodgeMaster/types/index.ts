@@ -8,6 +8,7 @@ export interface ObstacleData {
   vy: number;
   radius: number;
   color: string;
+  glowing?: boolean;
 }
 
 export interface GameSession {

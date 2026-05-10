@@ -59,7 +59,7 @@ export default function GameScreen() {
   );
 
   // ── Game engine ──
-  const { obstacles, score, phase, pauseGame, resumeGame, revivePlayer } =
+  const { obstacles, score, phase, chaosMode, pauseGame, resumeGame, revivePlayer } =
     useGameEngine({
       playerX,
       playerY,
@@ -155,7 +155,7 @@ export default function GameScreen() {
   const hasEnoughCoinsToRevive = coins >= COIN_VALUES.REVIVE_COST;
 
   return (
-    <View style={styles.root}>
+    <View style={[styles.root, chaosMode && styles.rootChaos]}>
       <StatusBar hidden />
 
       {/* ── Game field ── */}
@@ -225,6 +225,9 @@ const styles = StyleSheet.create({
   root: {
     flex: 1,
     backgroundColor: Colors.background,
+  },
+  rootChaos: {
+    backgroundColor: '#1A0000',
   },
   overlay: {
     ...StyleSheet.absoluteFillObject,

@@ -9,6 +9,7 @@ interface Props {
 /** Renders a single obstacle as an absolutely-positioned circle. */
 export const ObstacleItem = memo(function ObstacleItem({ obstacle }: Props) {
   const size = obstacle.radius * 2;
+  const glowing = obstacle.glowing ?? false;
   return (
     <View
       style={{
@@ -19,11 +20,11 @@ export const ObstacleItem = memo(function ObstacleItem({ obstacle }: Props) {
         height: size,
         borderRadius: obstacle.radius,
         backgroundColor: obstacle.color,
-        shadowColor: obstacle.color,
+        shadowColor: glowing ? '#FF3030' : obstacle.color,
         shadowOffset: { width: 0, height: 0 },
-        shadowOpacity: 0.7,
-        shadowRadius: obstacle.radius * 0.6,
-        elevation: 6,
+        shadowOpacity: glowing ? 1.0 : 0.7,
+        shadowRadius: glowing ? obstacle.radius * 1.8 : obstacle.radius * 0.6,
+        elevation: glowing ? 12 : 6,
       }}
     />
   );
