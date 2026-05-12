@@ -4,216 +4,209 @@ import {
   Text,
   StyleSheet,
   useWindowDimensions,
-  TouchableOpacity,
 } from 'react-native';
 import { router } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { GestureDetector, Gesture } from 'react-native-gesture-handler';
-import Animated, {
-  useSharedValue,
-  useAnimatedStyle,
-} from 'react-native-reanimated';
 
-import { GAME_CONFIG } from '@/constants/GameConfig';
-import { COIN_VALUES } from '@/constants/Coins';
 import { Colors } from '@/constants/Colors';
 import { useGameEngine } from '@/hooks/useGameEngine';
-import { useCoins } from '@/hooks/useCoins';
+import type { SlicePoint } from '@/hooks/useGameEngine';
 import { useBestScore } from '@/hooks/useBestScore';
 import { PlayerDot } from '@/components/PlayerDot';
 import { ObstacleItem } from '@/components/ObstacleItem';
 import { GameHUD } from '@/components/GameHUD';
 import { Button } from '@/components/Button';
-import { CoinDisplay } from '@/components/CoinDisplay';
 
-const R = GAME_CONFIG.PLAYER_RADIUS;
+// ─── Slice trail segment (gold glowing bar between two points) ────────────────
+
+function SliceSegment({
+  p1, p2, opacity,
+}: {
+  p1: SlicePoint; p2: SlicePoint; opacity: number;
+}) {
+  const dx  = p2.x - p1.x;
+  const dy  = p2.y - p1.y;
+  const len = Math.sqrt(dx * dx + dy * dy);
+  if (len < 1) return null;
+  const angle = Math.atan2(dy, dx) * (180 / Math.PI);
+  const midX  = (p1.x + p2.x) / 2;
+  const midY  = (p1.y + p2.y) / 2;
+  return (
+    <View
+      pointerEvents="none"
+      style={{
+        position: 'absolute',
+        left:        midX - len / 2,
+        top:         midY - 3,
+        width:       len,
+        height:      6,
+        borderRadius: 3,
+        backgroundColor: '#FFD700',
+        opacity,
+        shadowColor:   '#FFD700',
+        shadowOffset:  { width: 0, height: 0 },
+        shadowRadius:  8,
+        shadowOpacity: 0.95,
+        elevation:     10,
+        transform: [{ rotate: `${angle}deg` }],
+      }}
+    />
+  );
+}
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+// Minimum finger travel before a press is treated as a swipe rather than a tap.
+const SWIPE_THRESHOLD = 18;
+
+// ─── Screen ───────────────────────────────────────────────────────────────────
 
 export default function GameScreen() {
   const { width: screenWidth, height: screenHeight } = useWindowDimensions();
+  const { submitScore } = useBestScore();
 
-  // ── Player position (lives on UI thread — follows finger directly) ──
-  const playerX = useSharedValue(screenWidth / 2);
-  const playerY = useSharedValue(screenHeight / 2);
+  const [sliceTrail, setSliceTrail] = useState<SlicePoint[]>([]);
+  const [isSlicing,  setIsSlicing]  = useState(false);
 
-  // ── Coins & score persistence ──
-  const { coins, spend, add } = useCoins();
-  const { bestScore, submitScore } = useBestScore();
+  const slicePointsRef = useRef<SlicePoint[]>([]);
+  const trailTimerRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scoreRef       = useRef(0); // mirror for stable handleQuit closure
 
-  // ── Milestone tracking (earn coins every N score points) ──
-  const lastMilestoneRef = useRef(0);
-  const coinsEarnedRef = useRef(0);
+  // ── Death callback ─────────────────────────────────────────────────────────
 
-  // ── Revive tracking ──
-  const [canRevive, setCanRevive] = useState(true); // only one revive per run
-  const [reviving, setReviving] = useState(false);
-
-  // ── Invincibility flash (visual only) ──
-  const [isInvincible, setIsInvincible] = useState(false);
-
-  // ── Death callback — called once when game over occurs ──
   const handleDeath = useCallback(
     (finalScore: number) => {
       submitScore(finalScore);
+      router.replace({
+        pathname: '/gameover',
+        params: { score: String(finalScore), coinsEarned: '0' },
+      });
     },
     [submitScore],
   );
 
-  // ── Game engine ──
-  const { obstacles, score, phase, chaosMode, pauseGame, resumeGame, revivePlayer } =
-    useGameEngine({
-      playerX,
-      playerY,
-      screenWidth,
-      screenHeight,
-      onDeath: handleDeath,
-    });
+  // ── Game engine ────────────────────────────────────────────────────────────
 
-  // Award coins at score milestones
-  useEffect(() => {
-    const currentMilestone = Math.floor(
-      score / GAME_CONFIG.COINS_PER_MILESTONE_SCORE,
-    );
-    if (currentMilestone > lastMilestoneRef.current) {
-      lastMilestoneRef.current = currentMilestone;
-      add(COIN_VALUES.MILESTONE_REWARD).then(() => {
-        coinsEarnedRef.current += COIN_VALUES.MILESTONE_REWARD;
-      });
-    }
-  }, [score, add]);
+  const {
+    shapes,
+    score,
+    lives,
+    phase,
+    hitEffect,
+    centerX,
+    centerY,
+    destroyShapeAt,
+    destroyShapesAlongPath,
+    pauseGame,
+    resumeGame,
+  } = useGameEngine({ screenWidth, screenHeight, onDeath: handleDeath });
 
-  // ── Pan gesture — player follows finger on the UI thread ──
-  const panGesture = Gesture.Pan()
-    .minDistance(0)
-    .onBegin((e) => {
-      playerX.value = Math.min(
-        Math.max(e.x, R),
-        screenWidth - R,
-      );
-      playerY.value = Math.min(
-        Math.max(e.y, R),
-        screenHeight - R,
-      );
-    })
-    .onUpdate((e) => {
-      playerX.value = Math.min(
-        Math.max(e.x, R),
-        screenWidth - R,
-      );
-      playerY.value = Math.min(
-        Math.max(e.y, R),
-        screenHeight - R,
-      );
-    });
+  // Keep scoreRef up to date for the quit handler
+  useEffect(() => { scoreRef.current = score; }, [score]);
 
-  // ── Animated style for player dot ──
-  const playerStyle = useAnimatedStyle(() => ({
-    transform: [
-      { translateX: playerX.value - R },
-      { translateY: playerY.value - R },
-    ],
-  }));
+  // ── Quit to results ────────────────────────────────────────────────────────
 
-  // ── Revive handler ──
-  const handleRevive = useCallback(async () => {
-    if (!canRevive) return;
-    setReviving(true);
-    const success = await spend(COIN_VALUES.REVIVE_COST);
-    if (success) {
-      setCanRevive(false);
-      setIsInvincible(true);
-      // Reset player to center
-      playerX.value = screenWidth / 2;
-      playerY.value = screenHeight / 2;
-      revivePlayer();
-      setTimeout(
-        () => setIsInvincible(false),
-        GAME_CONFIG.REVIVE_INVINCIBILITY_MS,
-      );
-    }
-    setReviving(false);
-  }, [
-    canRevive,
-    spend,
-    playerX,
-    playerY,
-    screenWidth,
-    screenHeight,
-    revivePlayer,
-  ]);
-
-  // ── Quit to results screen ──
   const handleQuit = useCallback(() => {
     router.replace({
       pathname: '/gameover',
-      params: {
-        score: String(score),
-        coinsEarned: String(coinsEarnedRef.current),
-      },
+      params: { score: String(scoreRef.current), coinsEarned: '0' },
     });
-  }, [score]);
+  }, []);
 
-  const hasEnoughCoinsToRevive = coins >= COIN_VALUES.REVIVE_COST;
+  // ── Gesture: single Pan handles both tap and swipe ─────────────────────────
+  //
+  //  • Move < SWIPE_THRESHOLD → treated as a tap on finalize → destroyShapeAt
+  //  • Move ≥ SWIPE_THRESHOLD → swipe mode   → show trail, destroyShapesAlongPath
+  //
+  const gesture = Gesture.Pan()
+    .minDistance(0)
+    .onBegin((e) => {
+      if (trailTimerRef.current) clearTimeout(trailTimerRef.current);
+      slicePointsRef.current = [{ x: e.x, y: e.y }];
+      setSliceTrail([{ x: e.x, y: e.y }]);
+      setIsSlicing(false);
+    })
+    .onUpdate((e) => {
+      const pts   = slicePointsRef.current;
+      const start = pts[0];
+      if (!start) return;
+
+      const moved = Math.sqrt((e.x - start.x) ** 2 + (e.y - start.y) ** 2);
+      if (moved >= SWIPE_THRESHOLD) {
+        const last = pts[pts.length - 1];
+        const next = { x: e.x, y: e.y };
+        // Destroy shapes only along the newest segment
+        if (last) destroyShapesAlongPath([last, next]);
+        const newPts = [...pts, next].slice(-50); // cap trail length
+        slicePointsRef.current = newPts;
+        setSliceTrail([...newPts]);
+        if (!isSlicing) setIsSlicing(true);
+      }
+    })
+    .onFinalize((e) => {
+      const pts   = slicePointsRef.current;
+      const start = pts[0];
+      const moved = start
+        ? Math.sqrt((e.x - start.x) ** 2 + (e.y - start.y) ** 2)
+        : Infinity;
+
+      if (moved < SWIPE_THRESHOLD) {
+        // Short press — treat as tap on the start position
+        if (start) destroyShapeAt(start.x, start.y);
+      }
+
+      setIsSlicing(false);
+      if (trailTimerRef.current) clearTimeout(trailTimerRef.current);
+      trailTimerRef.current = setTimeout(() => {
+        setSliceTrail([]);
+        slicePointsRef.current = [];
+      }, 300);
+    });
+
+  // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
-    <View style={[styles.root, chaosMode && styles.rootChaos]}>
+    <View style={[styles.root, hitEffect && styles.rootHit]}>
       <StatusBar hidden />
 
-      {/* ── Game field ── */}
-      <GestureDetector gesture={panGesture}>
+      <GestureDetector gesture={gesture}>
         <View style={StyleSheet.absoluteFill}>
-          {obstacles.map((obs) => (
-            <ObstacleItem key={obs.id} obstacle={obs} />
+
+          {/* Incoming shapes */}
+          {shapes.map((s) => (
+            <ObstacleItem key={s.id} obstacle={s} />
           ))}
-          <PlayerDot animatedStyle={playerStyle} isInvincible={isInvincible} />
-          <GameHUD score={score} coins={coins} onPause={pauseGame} />
+
+          {/* Slice trail — drawn ABOVE shapes */}
+          {sliceTrail.length >= 2 &&
+            sliceTrail.map((pt, i) =>
+              i === 0 ? null : (
+                <SliceSegment
+                  key={i}
+                  p1={sliceTrail[i - 1]}
+                  p2={pt}
+                  opacity={isSlicing ? 0.92 : 0.45}
+                />
+              ),
+            )}
+
+          {/* Fixed centre ball */}
+          <PlayerDot x={centerX} y={centerY} hitEffect={hitEffect} />
+
+          {/* HUD — above everything */}
+          <GameHUD score={score} lives={lives} onPause={pauseGame} />
+
         </View>
       </GestureDetector>
 
-      {/* ── Pause overlay ── */}
+      {/* Pause overlay */}
       {phase === 'paused' && (
         <View style={styles.overlay}>
           <Text style={styles.overlayTitle}>PAUSED</Text>
           <View style={styles.overlayActions}>
             <Button label="RESUME" onPress={resumeGame} variant="primary" />
-            <Button label="QUIT" onPress={handleQuit} variant="ghost" />
-          </View>
-        </View>
-      )}
-
-      {/* ── Death overlay ── */}
-      {phase === 'dead' && (
-        <View style={[styles.overlay, styles.deadOverlay]}>
-          <Text style={styles.deadTitle}>YOU DIED</Text>
-          <Text style={styles.deadScore}>{score}s</Text>
-
-          {bestScore > 0 && score >= bestScore && (
-            <Text style={styles.newBest}>✦ NEW BEST ✦</Text>
-          )}
-
-          <View style={styles.overlayActions}>
-            {/* Revive — only shown if player has enough coins and hasn't revived yet */}
-            {canRevive && (
-              <View style={styles.reviveBlock}>
-                <Button
-                  label={`REVIVE  (${COIN_VALUES.REVIVE_COST} ✦)`}
-                  onPress={handleRevive}
-                  variant="primary"
-                  disabled={!hasEnoughCoinsToRevive}
-                  loading={reviving}
-                />
-                {!hasEnoughCoinsToRevive && (
-                  <Text style={styles.notEnoughCoins}>Not enough coins</Text>
-                )}
-              </View>
-            )}
-
-            <Button label="QUIT" onPress={handleQuit} variant="secondary" />
-          </View>
-
-          {/* Show coins earned so far */}
-          <View style={styles.coinsRow}>
-            <Text style={styles.coinsLabel}>EARNED  </Text>
-            <CoinDisplay amount={coinsEarnedRef.current} size="small" />
+            <Button label="QUIT"   onPress={handleQuit} variant="ghost"   />
           </View>
         </View>
       )}
@@ -226,8 +219,9 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: Colors.background,
   },
-  rootChaos: {
-    backgroundColor: '#1A0000',
+  rootHit: {
+    // Subtle red tint when a shape reaches the centre ball
+    backgroundColor: '#130000',
   },
   overlay: {
     ...StyleSheet.absoluteFillObject,
@@ -236,58 +230,14 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: 24,
   },
-  deadOverlay: {
-    backgroundColor: Colors.overlayDanger,
-  },
   overlayTitle: {
     fontSize: 40,
     fontWeight: '900',
-    color: Colors.white,
+    color: '#FFFFFF',
     letterSpacing: 6,
-  },
-  deadTitle: {
-    fontSize: 52,
-    fontWeight: '900',
-    color: Colors.danger,
-    letterSpacing: 6,
-    textShadowColor: Colors.danger,
-    textShadowOffset: { width: 0, height: 0 },
-    textShadowRadius: 20,
-  },
-  deadScore: {
-    fontSize: 64,
-    fontWeight: '800',
-    color: Colors.white,
-    letterSpacing: 2,
-  },
-  newBest: {
-    fontSize: 14,
-    letterSpacing: 4,
-    color: Colors.gold,
-    fontWeight: '700',
   },
   overlayActions: {
     gap: 14,
     alignItems: 'center',
-    marginTop: 8,
-  },
-  reviveBlock: {
-    alignItems: 'center',
-    gap: 6,
-  },
-  notEnoughCoins: {
-    fontSize: 12,
-    color: Colors.danger,
-    opacity: 0.8,
-  },
-  coinsRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginTop: 8,
-  },
-  coinsLabel: {
-    fontSize: 13,
-    color: Colors.textSecondary,
-    letterSpacing: 2,
   },
 });
