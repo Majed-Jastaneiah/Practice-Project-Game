@@ -3,6 +3,7 @@ import {
   View,
   Text,
   StyleSheet,
+  TouchableOpacity,
   useWindowDimensions,
 } from 'react-native';
 import { router } from 'expo-router';
@@ -11,7 +12,7 @@ import { GestureDetector, Gesture } from 'react-native-gesture-handler';
 
 import { Colors } from '@/constants/Colors';
 import { useGameEngine } from '@/hooks/useGameEngine';
-import type { SlicePoint } from '@/hooks/useGameEngine';
+import type { SlicePoint, PowerUpType } from '@/hooks/useGameEngine';
 import { useBestScore } from '@/hooks/useBestScore';
 import { PlayerDot } from '@/components/PlayerDot';
 import { ObstacleItem } from '@/components/ObstacleItem';
@@ -42,9 +43,9 @@ function SliceSegment({
         width:       len,
         height:      6,
         borderRadius: 3,
-        backgroundColor: '#FFD700',
+        backgroundColor: 'rgba(255,255,255,0.9)',
         opacity,
-        shadowColor:   '#FFD700',
+        shadowColor:   '#FFFFFF',
         shadowOffset:  { width: 0, height: 0 },
         shadowRadius:  8,
         shadowOpacity: 0.95,
@@ -59,6 +60,30 @@ function SliceSegment({
 
 // Minimum finger travel before a press is treated as a swipe rather than a tap.
 const SWIPE_THRESHOLD = 18;
+
+const CHAOS_LABELS: Record<string, string> = {
+  fire:    '🔥 FIRE CHAOS',
+  ice:     '❄️ ICE CHAOS',
+  thunder: '⚡ THUNDER CHAOS',
+};
+
+const MYSTERY_POOL: PowerUpType[] = ['kill_all', 'extra_points', 'slow_down', 'extra_lives'];
+
+const MYSTERY_LABELS: Record<string, string> = {
+  kill_all:     '💥 Kill All',
+  extra_points: '⭐ Double Points',
+  slow_down:    '🐢 Slow Down',
+  extra_lives:  '❤️ Extra Lives',
+};
+
+function puEmoji(type: string): string {
+  if (type === 'kill_all')     return '💥';
+  if (type === 'extra_points') return '⭐';
+  if (type === 'slow_down')    return '🐢';
+  if (type === 'extra_lives')  return '❤️';
+  if (type === 'mystery_box')  return '🎁';
+  return '✨';
+}
 
 // ─── Screen ───────────────────────────────────────────────────────────────────
 
@@ -96,14 +121,48 @@ export default function GameScreen() {
     hitEffect,
     centerX,
     centerY,
+    chaosMode,
+    survivalTime,
+    powerUps,
+    mysteryBoxCount,
     destroyShapeAt,
     destroyShapesAlongPath,
     pauseGame,
     resumeGame,
+    revive,
+    useMysteryBox,
   } = useGameEngine({ screenWidth, screenHeight, onDeath: handleDeath });
 
   // Keep scoreRef up to date for the quit handler
   useEffect(() => { scoreRef.current = score; }, [score]);
+
+  // Chaos announcement — visible for 3 s every time the mode changes
+  const [showChaosAnnouncement, setShowChaosAnnouncement] = useState(false);
+  const announcementTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (chaosMode !== 'none') {
+      setShowChaosAnnouncement(true);
+      if (announcementTimerRef.current) clearTimeout(announcementTimerRef.current);
+      announcementTimerRef.current = setTimeout(() => setShowChaosAnnouncement(false), 3000);
+    }
+    return () => { if (announcementTimerRef.current) clearTimeout(announcementTimerRef.current); };
+  }, [chaosMode]);
+
+  // Mystery box panel
+  const [mysteryPanelOpen, setMysteryPanelOpen] = useState(false);
+  const [mysteryChoices,   setMysteryChoices]   = useState<PowerUpType[]>([]);
+
+  const openMysteryPanel = useCallback(() => {
+    if (mysteryBoxCount <= 0) return;
+    const choices = [...MYSTERY_POOL].sort(() => Math.random() - 0.5).slice(0, 3);
+    setMysteryChoices(choices);
+    setMysteryPanelOpen(true);
+  }, [mysteryBoxCount]);
+
+  const handleMysteryChoice = useCallback((choice: PowerUpType) => {
+    useMysteryBox(choice);
+    setMysteryPanelOpen(false);
+  }, [useMysteryBox]);
 
   // ── Quit to results ────────────────────────────────────────────────────────
 
@@ -166,8 +225,13 @@ export default function GameScreen() {
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
+  const borderColor = chaosMode === 'fire'    ? '#FF4500'
+                    : chaosMode === 'ice'     ? '#00E5FF'
+                    : chaosMode === 'thunder' ? '#7C4DFF'
+                    : 'rgba(255,255,255,0.35)';
+
   return (
-    <View style={[styles.root, hitEffect && styles.rootHit]}>
+    <View style={[styles.root, hitEffect && styles.rootHit, { borderWidth: 3, borderColor }]}>
       <StatusBar hidden />
 
       <GestureDetector gesture={gesture}>
@@ -191,14 +255,53 @@ export default function GameScreen() {
               ),
             )}
 
+          {/* Power-ups — glowing gold icons spawned from screen edges */}
+          {powerUps.map(p => (
+            <View
+              key={p.id}
+              pointerEvents="none"
+              style={[styles.powerUpIcon, { left: p.x - 20, top: p.y - 20 }]}
+            >
+              <Text style={styles.powerUpEmoji}>{puEmoji(p.type)}</Text>
+            </View>
+          ))}
+
           {/* Fixed centre ball */}
           <PlayerDot x={centerX} y={centerY} hitEffect={hitEffect} />
 
           {/* HUD — above everything */}
-          <GameHUD score={score} lives={lives} onPause={pauseGame} />
+          <GameHUD
+            score={score}
+            lives={lives}
+            onPause={pauseGame}
+            survivalTime={survivalTime}
+            mysteryBoxCount={mysteryBoxCount}
+            onMysteryBoxTap={openMysteryPanel}
+          />
 
         </View>
       </GestureDetector>
+
+      {/* Chaos mode announcement — centred, visible for 3 s each cycle */}
+      {showChaosAnnouncement && chaosMode !== 'none' && (
+        <View pointerEvents="none" style={styles.chaosOverlay}>
+          <Text style={[styles.chaosText, { textShadowColor: borderColor }]}>
+            {CHAOS_LABELS[chaosMode]}
+          </Text>
+        </View>
+      )}
+
+      {/* Dead overlay — offer revive before going to game over */}
+      {phase === 'dead' && (
+        <View style={styles.overlay}>
+          <Text style={styles.overlayTitle}>YOU DIED</Text>
+          <Text style={styles.overlayScore}>Score: {score}</Text>
+          <View style={styles.overlayActions}>
+            <Button label="❤️ REVIVE" onPress={revive}                      variant="primary" />
+            <Button label="QUIT"       onPress={() => handleDeath(score)}    variant="ghost"   />
+          </View>
+        </View>
+      )}
 
       {/* Pause overlay */}
       {phase === 'paused' && (
@@ -207,6 +310,28 @@ export default function GameScreen() {
           <View style={styles.overlayActions}>
             <Button label="RESUME" onPress={resumeGame} variant="primary" />
             <Button label="QUIT"   onPress={handleQuit} variant="ghost"   />
+          </View>
+        </View>
+      )}
+
+      {/* Mystery box choice panel */}
+      {mysteryPanelOpen && (
+        <View style={styles.mysteryOverlay}>
+          <View style={styles.mysteryPanel}>
+            <Text style={styles.mysteryTitle}>🎁 MYSTERY BOX</Text>
+            <Text style={styles.mysterySubtitle}>Choose your reward:</Text>
+            <View style={styles.mysteryChoices}>
+              {mysteryChoices.map((choice) => (
+                <TouchableOpacity
+                  key={choice}
+                  style={styles.mysteryChoiceBtn}
+                  onPress={() => handleMysteryChoice(choice)}
+                >
+                  <Text style={styles.mysteryChoiceEmoji}>{puEmoji(choice)}</Text>
+                  <Text style={styles.mysteryChoiceLabel}>{MYSTERY_LABELS[choice]}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
           </View>
         </View>
       )}
@@ -236,8 +361,100 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     letterSpacing: 6,
   },
+  overlayScore: {
+    fontSize: 20,
+    color: 'rgba(255,255,255,0.75)',
+    fontWeight: '600',
+  },
   overlayActions: {
     gap: 14,
     alignItems: 'center',
+  },
+  mysteryOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.72)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  mysteryPanel: {
+    backgroundColor: '#1A1A2E',
+    borderRadius: 20,
+    padding: 24,
+    width: '85%',
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: '#FFD700',
+    shadowColor: '#FFD700',
+    shadowOffset: { width: 0, height: 0 },
+    shadowRadius: 24,
+    shadowOpacity: 0.85,
+    elevation: 30,
+  },
+  mysteryTitle: {
+    fontSize: 26,
+    fontWeight: '900',
+    color: '#FFD700',
+    marginBottom: 4,
+  },
+  mysterySubtitle: {
+    fontSize: 13,
+    color: 'rgba(255,255,255,0.65)',
+    marginBottom: 20,
+  },
+  mysteryChoices: {
+    flexDirection: 'row',
+    gap: 10,
+    width: '100%',
+  },
+  mysteryChoiceBtn: {
+    flex: 1,
+    backgroundColor: 'rgba(255,255,255,0.07)',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255,215,0,0.35)',
+    paddingVertical: 14,
+    alignItems: 'center',
+    gap: 6,
+  },
+  mysteryChoiceEmoji: {
+    fontSize: 28,
+  },
+  mysteryChoiceLabel: {
+    fontSize: 10,
+    color: '#FFFFFF',
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  chaosOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  chaosText: {
+    fontSize: 38,
+    fontWeight: '900',
+    color: '#FFFFFF',
+    letterSpacing: 3,
+    textShadowOffset: { width: 0, height: 0 },
+    textShadowRadius: 22,
+  },
+  powerUpIcon: {
+    position: 'absolute',
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    borderWidth: 2,
+    borderColor: '#FFD700',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#FFD700',
+    shadowOffset: { width: 0, height: 0 },
+    shadowRadius: 12,
+    shadowOpacity: 1,
+    elevation: 15,
+  },
+  powerUpEmoji: {
+    fontSize: 18,
   },
 });
